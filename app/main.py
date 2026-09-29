@@ -2,6 +2,7 @@ from fastapi import FastAPI
 
 from app.api.exception_handlers import app_exception_handler
 from app.api.router import api_router
+from app.core.exceptions import AppException
 
 app = FastAPI(title="MiniShop")
 
@@ -11,7 +12,3 @@ app.include_router(
     prefix="/api/v1",
 )
 
-
-@app.get("/")
-async def root():
-    return {"message": "MiniShop API is running"}
