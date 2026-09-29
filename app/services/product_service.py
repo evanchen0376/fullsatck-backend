@@ -1,4 +1,4 @@
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AppException
@@ -36,3 +36,18 @@ class ProductService:
                 status_code=404,
             )
         return product
+
+    async def list_products(
+        self,
+        skip: int = 0,
+        limit: int = 100,
+    ) -> tuple[list[Product], int]:
+        """返回 (当前页数据, 总条数)，total 供前端计算总页数。"""
+        # 必须 order_by：没有确定顺序时 offset/limit 的结果在 SQL 层面不稳定，可能跨页重复或漏数据
+        stmt = select(Product).order_by(Product.id).offset(skip).limit(limit)
+        result = await self.db.execute(stmt)
+        items = list(result.scalars().all())
+
+        total = await self.db.scalar(select(func.count()).select_from(Product)) or 0
+
+        return items, total

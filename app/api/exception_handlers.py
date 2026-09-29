@@ -8,6 +8,7 @@ from fastapi.utils import is_body_allowed_for_status_code
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.core.exceptions import AppException
+from app.schemas.common import ApiResponse
 
 
 def error_response(
@@ -18,11 +19,13 @@ def error_response(
     data: Any = None,
     headers: dict[str, str] | None = None,
 ) -> JSONResponse:
-    """统一错误响应体：{"code": ..., "message": ..., "data": ...}"""
+    """统一错误响应体，字段定义与成功响应共用 ApiResponse，避免两边结构漂移。"""
+    payload = ApiResponse[Any](code=code, message=message, data=data).model_dump()
+
     return JSONResponse(
         status_code=status_code,
         headers=headers,
-        content={"code": code, "message": message, "data": data},
+        content=payload,
     )
 
 

@@ -18,3 +18,10 @@ class ProductResponse(BaseModel):
     price: Decimal
     stock: int
     created_at: datetime
+
+
+class ProductPage(BaseModel):
+    """分页结果：total 为满足条件的总条数，供前端计算总页数。"""
+
+    total: int
+    items: list[ProductResponse]
