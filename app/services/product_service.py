@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AppException
 from app.models.product import Product
-from app.schemas.product import ProductCreate
+from app.schemas.product import ProductCreate, ProductUpdate
 
 
 class ProductService:
@@ -51,3 +51,23 @@ class ProductService:
         total = await self.db.scalar(select(func.count()).select_from(Product)) or 0
 
         return items, total
+
+    async def update_product(self, product_id: int, payload: ProductUpdate) -> Product:
+        product = await self.get_product(product_id)
+
+        # PUT 是全量替换：逐个字段显式覆盖，不做 exclude_unset 筛选。
+        # 写死字段名而不是循环 model_dump()，是为了让「全量替换」这个契约在代码里可见，
+        # 将来 schema 加字段时也不会被静默漏掉。
+        product.name = payload.name
+        product.price = payload.price
+        product.stock = payload.stock
+
+        await self.db.commit()
+        await self.db.refresh(product)
+        return product
+
+    async def delete_product(self, product_id: int) -> None:
+        product = await self.get_product(product_id)
+
+        await self.db.delete(product)
+        await self.db.commit()

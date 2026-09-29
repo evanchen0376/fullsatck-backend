@@ -5,7 +5,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.schemas.common import ApiResponse
-from app.schemas.product import ProductCreate, ProductPage, ProductResponse
+from app.schemas.product import (
+    ProductCreate,
+    ProductPage,
+    ProductResponse,
+    ProductUpdate,
+)
 from app.services.product_service import ProductService
 
 router = APIRouter()
@@ -53,3 +58,32 @@ async def get_product(
     product = await service.get_product(product_id)
 
     return ApiResponse[ProductResponse].ok(product)
+
+
+@router.put(
+    "/{product_id}",
+    response_model=ApiResponse[ProductResponse],
+)
+async def update_product(
+    product_id: int,
+    payload: ProductUpdate,
+    db: AsyncSession = Depends(get_db),
+) -> ApiResponse[ProductResponse]:
+    service = ProductService(db)
+    product = await service.update_product(product_id, payload)
+
+    return ApiResponse[ProductResponse].ok(product)
+
+
+@router.delete(
+    "/{product_id}",
+    response_model=ApiResponse[None],
+)
+async def delete_product(
+    product_id: int,
+    db: AsyncSession = Depends(get_db),
+) -> ApiResponse[None]:
+    service = ProductService(db)
+    await service.delete_product(product_id)
+
+    return ApiResponse[None].ok()
