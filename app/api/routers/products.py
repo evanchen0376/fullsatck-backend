@@ -20,3 +20,17 @@ async def create_product(
     service = ProductService(db)
 
     return await service.create_product(payload)
+
+
+@router.get(
+    "/{product_id}",
+    response_model=ProductResponse,
+)
+
+async def get_product(
+    product_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    service = ProductService(db)
+    return await service.get_product(product_id)
+
