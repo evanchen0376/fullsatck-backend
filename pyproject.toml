@@ -16,6 +16,10 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "anyio>=4.15.1",
+    "httpx>=0.28.1",
+    "pytest>=9.1.1",
+    "python-dotenv>=1.2.3",
     "ruff>=0.16.8",
 ]
 
@@ -35,3 +39,9 @@ extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Path", "f
 quote-style = "double"
 indent-style = "space"
 line-ending = "auto"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra"
+# 异步用例统一用 anyio（自带 pytest 插件），无需再引入 pytest-asyncio
