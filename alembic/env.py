@@ -9,6 +9,10 @@ from alembic import context
 from app.core.config import settings
 from app.db.base import Base
 
+# 必须显式导入模型包：Base.metadata 只收集「已被 import 过」的模型，
+# 否则 --autogenerate 比对时看不到任何表，生成出空迁移。
+import app.models  # noqa: E402, F401
+
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config
