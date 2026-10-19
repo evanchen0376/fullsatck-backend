@@ -11,6 +11,19 @@ class UserCreate(BaseModel):
     password: str = Field(min_length=8, max_length=72)
 
 
+class UserLogin(BaseModel):
+    email: str = Field(min_length=3, max_length=255, description="注册时使用的邮箱")
+    # 登录不做强度校验：规则可能随时间变化，旧账号不应因为新规则被锁在门外
+    password: str = Field(min_length=1, max_length=128)
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    # 秒数，方便前端在到期前主动刷新，而不必解析 JWT 载荷
+    expires_in: int
+
+
 class UserResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

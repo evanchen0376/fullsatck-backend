@@ -10,9 +10,12 @@ class AppException(Exception):
         code: str,
         status_code: int = 400,
         data: Any = None,
+        headers: dict[str, str] | None = None,
     ):
         self.message = message
         self.code = code
         self.status_code = status_code
         self.data = data
+        # 401 需要带 WWW-Authenticate: Bearer，否则不合 RFC 6750，客户端/网关可能不认
+        self.headers = headers
         super().__init__(message)

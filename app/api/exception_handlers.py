@@ -36,6 +36,7 @@ async def app_exception_handler(request: Request, exc: AppException) -> JSONResp
         code=exc.code,
         message=exc.message,
         data=exc.data,
+        headers=exc.headers,
     )
 
 

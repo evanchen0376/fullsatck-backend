@@ -11,6 +11,14 @@ class Settings(BaseSettings):
     MYSQL_PASSWORD: str = ""
     MYSQL_DATABASE: str = "minishop"
 
+    # 生产必须通过环境变量覆盖：默认值只用于本地开发，泄露它等于可以伪造任意用户令牌
+    SECRET_KEY: str = "dev-only-insecure-secret-key-change-me"
+    JWT_ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
+    # iss/aud 让令牌只能被本服务、本 API 使用，防止同一密钥签出的令牌被别的系统复用
+    JWT_ISSUER: str = "minishop"
+    JWT_AUDIENCE: str = "minishop-api"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
