@@ -1,3 +1,4 @@
+from collections.abc import Awaitable, Callable
 from typing import Annotated
 
 from fastapi import Depends
@@ -7,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import AppException
 from app.core.security import BEARER_CHALLENGE_HEADERS, decode_access_token
 from app.db.session import get_db
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.services.user_service import UserService
 
 # auto_error=False：缺少/格式错误的 Authorization 头不交给 FastAPI 自己处理，
@@ -62,3 +63,25 @@ async def get_current_user(
 
 
 CurrentUser = Annotated[User, Depends(get_current_user)]
+
+
+def require_roles(*roles: UserRole) -> Callable[..., Awaitable[User]]:
+    """角色校验依赖工厂：``Depends(require_roles(UserRole.ADMIN))``。
+
+    能走到这里说明身份已经过了 ``get_current_user``，所以角色不符是 403（无权限），
+    而不是 401（未认证）——两者语义不能混用，否则客户端会把「权限不足」当成「需要重新登录」。
+    """
+
+    async def _checker(current_user: CurrentUser) -> User:
+        if current_user.role not in roles:
+            raise AppException(
+                message="Insufficient permissions",
+                code="FORBIDDEN",
+                status_code=403,
+            )
+        return current_user
+
+    return _checker
+
+
+AdminUser = Annotated[User, Depends(require_roles(UserRole.ADMIN))]

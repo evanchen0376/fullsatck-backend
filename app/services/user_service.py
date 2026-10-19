@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,8 +11,8 @@ from app.core.security import (
     hash_password,
     verify_password,
 )
-from app.models.user import User
-from app.schemas.user import UserCreate
+from app.models.user import User, UserRole
+from app.schemas.user import UserAdminUpdate, UserCreate
 
 
 @lru_cache(maxsize=1)
@@ -70,6 +70,9 @@ class UserService:
             username=username,
             email=email,
             hashed_password=hash_password(payload.password),
+            # 角色只由服务端决定：UserCreate 根本没有 role 字段，
+            # 这里显式写死是为了让「注册一律普通用户」在代码里可见
+            role=UserRole.USER,
         )
         self.db.add(user)
 
@@ -112,6 +115,43 @@ class UserService:
     async def get_user_by_id(self, user_id: int) -> User | None:
         """按主键取用户；不存在返回 None，由调用方决定 401 还是 404。"""
         return await self.db.scalar(select(User).where(User.id == user_id))
+
+    async def list_users(self, skip: int = 0, limit: int = 100) -> tuple[list[User], int]:
+        """返回 (当前页数据, 总条数)；必须 order_by，否则跨页结果不稳定。"""
+        stmt = select(User).order_by(User.id).offset(skip).limit(limit)
+        result = await self.db.execute(stmt)
+        items = list(result.scalars().all())
+
+        total = await self.db.scalar(select(func.count()).select_from(User)) or 0
+
+        return items, total
+
+    async def update_user_admin(self, user_id: int, payload: UserAdminUpdate, actor: User) -> User:
+        """管理员修改他人角色/启用状态。"""
+        if user_id == actor.id:
+            # 允许管理员改自己等于允许他把自己降级或停用，最后一个管理员会直接锁死系统
+            raise AppException(
+                message="Admins cannot change their own role or status",
+                code="SELF_MODIFICATION_FORBIDDEN",
+                status_code=403,
+            )
+
+        user = await self.get_user_by_id(user_id)
+        if user is None:
+            raise AppException(
+                message="User not found",
+                code="USER_NOT_FOUND",
+                status_code=404,
+            )
+
+        if payload.role is not None:
+            user.role = payload.role
+        if payload.is_active is not None:
+            user.is_active = payload.is_active
+
+        await self.db.commit()
+        await self.db.refresh(user)
+        return user
 
     async def _exists(self, *, username: str | None = None, email: str | None = None) -> bool:
         """按唯一字段查重；走唯一索引，代价等同于一次点查。"""

@@ -1,6 +1,8 @@
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from app.models.user import UserRole
 
 
 class UserCreate(BaseModel):
@@ -24,12 +26,33 @@ class TokenResponse(BaseModel):
     expires_in: int
 
 
+class UserAdminUpdate(BaseModel):
+    """管理员改用户角色/启用状态；两个字段都可选，但不能都不传。"""
+
+    role: UserRole | None = None
+    is_active: bool | None = None
+
+    @model_validator(mode="after")
+    def _require_at_least_one(self) -> "UserAdminUpdate":
+        if self.role is None and self.is_active is None:
+            raise ValueError("At least one of role or is_active is required")
+        return self
+
+
 class UserResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
     username: str
     email: str
+    role: UserRole
     is_active: bool
     created_at: datetime
     # hashed_password 刻意不暴露：响应模型里没有这个字段，ORM 对象序列化时不会泄漏
+
+
+class UserPage(BaseModel):
+    """分页结果：total 为满足条件的总条数，供前端计算总页数。"""
+
+    total: int
+    items: list[UserResponse]
