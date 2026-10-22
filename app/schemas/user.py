@@ -21,9 +21,19 @@ class UserLogin(BaseModel):
 
 class TokenResponse(BaseModel):
     access_token: str
+    refresh_token: str
     token_type: str = "bearer"
-    # 秒数，方便前端在到期前主动刷新，而不必解析 JWT 载荷
+    # access_token 剩余秒数，方便前端在到期前主动刷新，而不必解析 JWT 载荷
     expires_in: int
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str = Field(min_length=1)
+
+
+class LogoutRequest(BaseModel):
+    # 登出必须连 refresh 一起撤：只撤 access 的话，客户端拿 refresh 还能换回新的一对
+    refresh_token: str = Field(min_length=1)
 
 
 class UserAdminUpdate(BaseModel):

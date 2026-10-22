@@ -15,9 +15,15 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "dev-only-insecure-secret-key-change-me"
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
+    # 刷新令牌活得比访问令牌久，但每次刷新都会轮换（旧的立即作废）
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     # iss/aud 让令牌只能被本服务、本 API 使用，防止同一密钥签出的令牌被别的系统复用
     JWT_ISSUER: str = "minishop"
     JWT_AUDIENCE: str = "minishop-api"
+
+    # 登录限流：同一 IP + 同一账号，窗口内允许的失败次数
+    LOGIN_MAX_ATTEMPTS: int = 5
+    LOGIN_LOCKOUT_SECONDS: int = 900
 
     model_config = SettingsConfigDict(
         env_file=".env",

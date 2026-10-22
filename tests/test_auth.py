@@ -159,7 +159,7 @@ class TestAuthMe:
 
     async def test_expired_token_returns_401(self, client: AsyncClient) -> None:
         user = await register(client)
-        token, _ = create_access_token(str(user["id"]), expires_delta=timedelta(seconds=-1))
+        token = create_access_token(str(user["id"]), expires_delta=timedelta(seconds=-1)).token
 
         response = await client.get(f"{AUTH_URL}/me", headers={"Authorization": f"Bearer {token}"})
 

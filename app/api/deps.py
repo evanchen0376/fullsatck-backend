@@ -1,5 +1,5 @@
 from collections.abc import Awaitable, Callable
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -9,6 +9,7 @@ from app.core.exceptions import AppException
 from app.core.security import BEARER_CHALLENGE_HEADERS, decode_access_token
 from app.db.session import get_db
 from app.models.user import User, UserRole
+from app.services.token_service import TokenService
 from app.services.user_service import UserService
 
 # auto_error=False：缺少/格式错误的 Authorization 头不交给 FastAPI 自己处理，
@@ -16,11 +17,11 @@ from app.services.user_service import UserService
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
-async def get_current_user(
+async def get_token_payload(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
     db: Annotated[AsyncSession, Depends(get_db)],
-) -> User:
-    """解析 Bearer 令牌并加载用户；任何一步失败都返回 401/403，绝不返回匿名用户。"""
+) -> dict[str, Any]:
+    """认证第一层：令牌本身是否有效（签名、有效期、类型）以及是否已被登出撤销。"""
     if credentials is None:
         raise AppException(
             message="Not authenticated",
@@ -31,6 +32,26 @@ async def get_current_user(
 
     payload = decode_access_token(credentials.credentials)
 
+    # 登出撤销表：jti 命中说明这枚令牌已被主动作废，不能等它自然过期
+    if await TokenService(db).is_revoked(str(payload["jti"])):
+        raise AppException(
+            message="Token has been revoked",
+            code="TOKEN_REVOKED",
+            status_code=401,
+            headers=BEARER_CHALLENGE_HEADERS,
+        )
+
+    return payload
+
+
+TokenPayload = Annotated[dict[str, Any], Depends(get_token_payload)]
+
+
+async def get_current_user(
+    payload: TokenPayload,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> User:
+    """认证第二层：令牌有效的前提下，账号必须仍然存在且启用。"""
     try:
         user_id = int(str(payload["sub"]))
     except (TypeError, ValueError) as exc:
