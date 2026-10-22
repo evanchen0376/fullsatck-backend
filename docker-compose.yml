@@ -24,5 +24,24 @@ services:
       retries: 10
       start_period: 20s
 
+  redis:
+    image: redis:7-alpine
+    container_name: minishop-redis
+    restart: unless-stopped
+
+    # 限流计数是可重建的临时状态：关掉持久化避免多一份磁盘账本
+    # （重启即清零对限流是可接受的，多实例一致性由「共享同一实例」保证）
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+
+    ports:
+      - "6379:6379"
+
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
 volumes:
   mysql_data:

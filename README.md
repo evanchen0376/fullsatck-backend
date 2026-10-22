@@ -6,7 +6,7 @@
 
 - Python >= 3.12
 - [uv](https://docs.astral.sh/uv/)（依赖管理）
-- Docker & Docker Compose（运行 MySQL）
+- Docker & Docker Compose（运行 MySQL、Redis）
 
 ## 本地调试
 
@@ -25,15 +25,17 @@ cd minishop
 uv sync
 ```
 
-### 3. 启动 MySQL
+### 3. 启动 MySQL 与 Redis
 
-通过 `docker-compose` 在本地启动 MySQL 8.0：
+通过 `docker-compose` 在本地启动 MySQL 8.0 与 Redis 7：
 
 ```bash
-docker compose up -d mysql
+docker compose up -d mysql redis
 ```
 
-可使用以下命令查看 MySQL 健康状态：
+> Redis 用于登录限流计数：计数必须被所有 worker/副本共享，放在进程内存里会随实例数放大额度。
+
+可使用以下命令查看服务健康状态：
 
 ```bash
 docker compose ps
@@ -49,9 +51,21 @@ MYSQL_PORT=3306
 MYSQL_USER=minishop
 MYSQL_PASSWORD=minishop123456
 MYSQL_DATABASE=minishop
+
+REDIS_URL=redis://127.0.0.1:6379/0
 ```
 
 > 如果你修改了 `docker-compose.yml` 中的密码，请同步修改此处。
+
+限流相关可选配置（不填即用默认值）：
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `LOGIN_MAX_ATTEMPTS` | `5` | 同一 IP + 账号在窗口内允许的失败次数 |
+| `LOGIN_LOCKOUT_SECONDS` | `900` | 滑动窗口长度，同时也是锁定上限 |
+| `RATE_LIMIT_KEY_PREFIX` | `minishop:ratelimit:login` | key 前缀，用于隔离环境 |
+| `RATE_LIMIT_FAIL_OPEN` | `true` | Redis 故障时 `true` 放行、`false` 拒绝（503） |
+| `REDIS_TIMEOUT_SECONDS` | `0.5` | 限流判定的连接/读写超时，避免 Redis 拖慢登录 |
 
 ### 5. 启动开发服务
 
@@ -84,7 +98,8 @@ uv run python -m app.scripts.test_db
 
 ## 运行测试
 
-集成测试跑在**真实 MySQL** 上（`pytest + httpx ASGITransport + asyncmy`），不依赖任何 mock。
+集成测试跑在**真实 MySQL + 真实 Redis** 上（`pytest + httpx ASGITransport + asyncmy`），不依赖任何 mock。
+Redis 是必需依赖：限流计数存在 Redis 里，测试通过独立的 DB（`/1`）与独立 key 前缀和开发环境隔离。
 
 ### 1. 准备测试库
 
@@ -100,6 +115,8 @@ docker compose exec mysql mysql -uroot -proot123456 -e "CREATE DATABASE IF NOT E
 
 ```env
 TEST_DATABASE_URL=mysql+asyncmy://minishop:minishop123456@127.0.0.1:3306/minishop_test
+REDIS_URL=redis://127.0.0.1:6379/1
+RATE_LIMIT_KEY_PREFIX=minishop-test:ratelimit:login
 ```
 
 > 库名必须以 `_test` 结尾：测试会话开始会 `drop_all` + `create_all` 重建表，结尾再次 `drop_all`，
@@ -121,8 +138,8 @@ uv run pytest tests/test_products.py::TestCreateProduct   # 只跑某个类
 | 操作 | 命令 |
 | --- | --- |
 | 安装 / 同步依赖 | `uv sync` |
-| 启动 MySQL | `docker compose up -d mysql` |
-| 停止 MySQL | `docker compose down` |
+| 启动 MySQL、Redis | `docker compose up -d mysql redis` |
+| 停止依赖服务 | `docker compose down` |
 | 启动 API（开发模式） | `uv run uvicorn app.main:app --reload` |
 | 运行测试 | `uv run pytest` |
 | 运行脚本 | `uv run python -m app.scripts.<script_name>` |

@@ -22,13 +22,19 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from app.db.base import Base
-from app.db.session import get_db
-from app.main import app
-from app.models import Product  # noqa: F401  # 导入以让 Base.metadata 感知全部表
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ENV_TEST_FILE = PROJECT_ROOT / ".env.test"
+
+# 必须早于 app 导入：settings 是模块级单例，导入那一刻就把 REDIS_URL / 限流前缀定死了，
+# 之后再 load_dotenv 也改不动它。测试因此使用独立的 Redis DB 和独立 key 前缀。
+load_dotenv(ENV_TEST_FILE)
+
+from app.core.ratelimit import login_limiter  # noqa: E402
+from app.core.redis import get_redis  # noqa: E402
+from app.db.base import Base  # noqa: E402
+from app.db.session import get_db  # noqa: E402
+from app.main import app  # noqa: E402
+from app.models import Product  # noqa: E402,F401  # 导入以让 Base.metadata 感知全部表
 
 
 def test_database_url() -> str:
@@ -128,3 +134,21 @@ async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
             yield async_client
     finally:
         app.dependency_overrides.pop(get_db, None)
+
+
+@pytest.fixture(autouse=True)
+async def clear_login_rate_limit() -> AsyncGenerator[None, None]:
+    """限流计数现在存在 Redis 里，会跨用例、跨次运行残留。
+
+    内存版靠「进程重启」天然清空，换成 Redis 后必须显式清理，
+    否则第二次跑同一批用例会直接撞上上一轮留下的 429。
+    """
+    await login_limiter.reset_all()
+    try:
+        yield
+    finally:
+        await login_limiter.reset_all()
+        # anyio 每个用例一个事件循环，而连接池里的连接是绑定在旧循环上的：
+        # 不主动断开，下一个用例会在「已关闭的循环」上复用这条连接并报错。
+        # 只影响测试（生产只有一个循环），但必须在用例结束、循环还活着的时候做。
+        await get_redis().aclose()

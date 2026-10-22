@@ -25,6 +25,15 @@ class Settings(BaseSettings):
     LOGIN_MAX_ATTEMPTS: int = 5
     LOGIN_LOCKOUT_SECONDS: int = 900
 
+    # 限流计数必须多实例共享，所以落在 Redis 而不是进程内存
+    REDIS_URL: str = "redis://127.0.0.1:6379/0"
+    # 前缀用于隔离环境/测试：清库时只删自己的 key，不误伤同一实例上的其它数据
+    RATE_LIMIT_KEY_PREFIX: str = "minishop:ratelimit:login"
+    # Redis 故障时的取舍：True 放行（可用性优先），False 拒绝（安全优先，登录会整体不可用）
+    RATE_LIMIT_FAIL_OPEN: bool = True
+    # 限流判定不能让登录被 Redis 拖住：连接/读写都必须有短超时
+    REDIS_TIMEOUT_SECONDS: float = 0.5
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
