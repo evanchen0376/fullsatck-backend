@@ -33,7 +33,7 @@ from redis.exceptions import RedisError
 
 from app.core.config import settings
 from app.core.exceptions import AppException
-from app.core.redis import get_redis
+from app.core.redis import delete_by_prefix, get_redis
 
 logger = logging.getLogger(__name__)
 
@@ -128,27 +128,16 @@ class RedisLoginRateLimiter:
             logger.warning("清零登录失败次数失败（用户可能被自己的手误多挡一会儿）：key=%s err=%s", key, exc)
 
     async def reset_all(self) -> int:
-        """只删本前缀的 key。
+        """只删本前缀的 key（SCAN + 分批 DEL），返回删除数量。
 
         用 SCAN 而不是 ``FLUSHDB``：同一台 Redis 可能还有别的环境/别的业务，
-        整体清库会误伤。返回删除的 key 数量。
+        整体清库会误伤。
         """
-        deleted = 0
-        batch: list[str] = []
-
         try:
-            async for found in self._client.scan_iter(match=f"{self._prefix}:*", count=500):
-                batch.append(found)
-                if len(batch) >= 500:
-                    deleted += int(await self._client.delete(*batch))
-                    batch.clear()
-
-            if batch:
-                deleted += int(await self._client.delete(*batch))
+            return await delete_by_prefix(self._client, f"{self._prefix}:")
         except (RedisError, OSError) as exc:
             logger.warning("清理限流 key 失败：err=%s", exc)
-
-        return deleted
+            return 0
 
     async def _on_check_failure(self, exc: Exception) -> int:
         if self._fail_open:

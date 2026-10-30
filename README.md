@@ -67,6 +67,22 @@ REDIS_URL=redis://127.0.0.1:6379/0
 | `RATE_LIMIT_FAIL_OPEN` | `true` | Redis 故障时 `true` 放行、`false` 拒绝（503） |
 | `REDIS_TIMEOUT_SECONDS` | `0.5` | 限流判定的连接/读写超时，避免 Redis 拖慢登录 |
 
+商品查询缓存相关：
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `CACHE_KEY_PREFIX` | `minishop:cache:product` | 缓存 key 前缀 |
+| `PRODUCT_CACHE_TTL_SECONDS` | `60` | 缓存 TTL（含 ±10% 抖动），也是失效兜底 |
+| `PRODUCT_LIST_CACHE_MAX_OFFSET` | `1000` | 只缓存 `skip + limit` 不超过该值的列表页 |
+
+缓存策略要点：
+
+- **详情**按 id 缓存，`PUT` / `DELETE` 时精确 `DEL`。
+- **列表**的 key 带版本号（`list:v{n}:skip:limit`），任何写操作只 `INCR` 版本号让旧 key 立刻不可达，
+  避免为「有多少个分页 key」做全库 `SCAN`；版本号本身不设 TTL，否则归零会让旧 key「复活」。
+- **深分页不缓存**：`skip` 无上限，全缓存会把 key 空间撑成无限。
+- **Redis 故障时缓存整体降级**：读不到就当未命中，写/失效失败只记日志，不影响接口返回。
+
 ### 5. 启动开发服务
 
 进入 `app/` 目录并以热重载模式启动 FastAPI：

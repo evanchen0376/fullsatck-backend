@@ -35,6 +35,7 @@ from app.db.base import Base  # noqa: E402
 from app.db.session import get_db  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import Product  # noqa: E402,F401  # 导入以让 Base.metadata 感知全部表
+from app.services.product_cache import product_cache  # noqa: E402
 
 
 def test_database_url() -> str:
@@ -137,17 +138,19 @@ async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
 
 
 @pytest.fixture(autouse=True)
-async def clear_login_rate_limit() -> AsyncGenerator[None, None]:
-    """限流计数现在存在 Redis 里，会跨用例、跨次运行残留。
+async def clear_redis_state() -> AsyncGenerator[None, None]:
+    """限流计数与商品缓存都存在 Redis 里，会跨用例、跨次运行残留。
 
-    内存版靠「进程重启」天然清空，换成 Redis 后必须显式清理，
-    否则第二次跑同一批用例会直接撞上上一轮留下的 429。
+    限流不清会撞上上一轮的 429；商品缓存不清会让「空库应为 total=0」这类断言
+    读到上一轮用例留下的列表缓存。数据库事务能回滚，Redis 不行，只能显式清。
     """
     await login_limiter.reset_all()
+    await product_cache.reset_all()
     try:
         yield
     finally:
         await login_limiter.reset_all()
+        await product_cache.reset_all()
         # anyio 每个用例一个事件循环，而连接池里的连接是绑定在旧循环上的：
         # 不主动断开，下一个用例会在「已关闭的循环」上复用这条连接并报错。
         # 只影响测试（生产只有一个循环），但必须在用例结束、循环还活着的时候做。

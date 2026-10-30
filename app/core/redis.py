@@ -33,3 +33,24 @@ async def close_redis() -> None:
     if _client is not None:
         await _client.aclose()
         _client = None
+
+
+async def delete_by_prefix(client: Redis, prefix: str) -> int:
+    """按前缀删除 key，返回删除数量。
+
+    用 ``SCAN`` + 分批 ``DEL`` 而不是 ``FLUSHDB``：同一台 Redis 上往往还有别的环境、
+    别的业务，整库清空会误伤。分批是为了不把一次上千 key 的删除压进单条命令。
+    """
+    deleted = 0
+    batch: list[str] = []
+
+    async for found in client.scan_iter(match=f"{prefix}*", count=500):
+        batch.append(found)
+        if len(batch) >= 500:
+            deleted += int(await client.delete(*batch))
+            batch.clear()
+
+    if batch:
+        deleted += int(await client.delete(*batch))
+
+    return deleted

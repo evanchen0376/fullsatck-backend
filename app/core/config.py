@@ -34,6 +34,12 @@ class Settings(BaseSettings):
     # 限流判定不能让登录被 Redis 拖住：连接/读写都必须有短超时
     REDIS_TIMEOUT_SECONDS: float = 0.5
 
+    # 商品查询缓存：TTL 是「漏了失效」时的最终兜底，宁可短一点
+    CACHE_KEY_PREFIX: str = "minishop:cache:product"
+    PRODUCT_CACHE_TTL_SECONDS: int = 60
+    # 列表缓存只覆盖前若干条数据：skip 无上限，深分页会把 key 空间撑成无限（缓存穿透攻击面）
+    PRODUCT_LIST_CACHE_MAX_OFFSET: int = 1000
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
