@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     PRODUCT_CACHE_TTL_SECONDS: int = 60
     # 列表缓存只覆盖前若干条数据：skip 无上限，深分页会把 key 空间撑成无限（缓存穿透攻击面）
     PRODUCT_LIST_CACHE_MAX_OFFSET: int = 1000
+    # 负缓存：不存在的 id 也记一个短 TTL 标记，避免被反复扫描打穿到数据库（穿透）
+    PRODUCT_CACHE_NEGATIVE_TTL_SECONDS: int = 30
+    # 击穿保护：同一 key 只放一个请求回源，其余排队等它回填；等太久就退化成直接回源
+    PRODUCT_CACHE_LOCK_TIMEOUT_SECONDS: float = 2.0
 
     model_config = SettingsConfigDict(
         env_file=".env",

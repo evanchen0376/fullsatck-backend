@@ -6,6 +6,18 @@ from app.models.product import Product
 from app.schemas.product import ProductCreate, ProductUpdate
 
 
+def product_not_found() -> AppException:
+    """商品不存在。
+
+    service 与「缓存负命中」两条路径共用同一个错误，避免两处 message/code 漂移。
+    """
+    return AppException(
+        message="Product not found",
+        code="PRODUCT_NOT_FOUND",
+        status_code=404,
+    )
+
+
 class ProductService:
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -30,11 +42,7 @@ class ProductService:
         result = await self.db.execute(stmt)
         product = result.scalars().one_or_none()
         if not product:
-            raise AppException(
-                message="Product not found",
-                code="PRODUCT_NOT_FOUND",
-                status_code=404,
-            )
+            raise product_not_found()
         return product
 
     async def list_products(

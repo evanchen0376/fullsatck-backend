@@ -74,6 +74,8 @@ REDIS_URL=redis://127.0.0.1:6379/0
 | `CACHE_KEY_PREFIX` | `minishop:cache:product` | 缓存 key 前缀 |
 | `PRODUCT_CACHE_TTL_SECONDS` | `60` | 缓存 TTL（含 ±10% 抖动），也是失效兜底 |
 | `PRODUCT_LIST_CACHE_MAX_OFFSET` | `1000` | 只缓存 `skip + limit` 不超过该值的列表页 |
+| `PRODUCT_CACHE_NEGATIVE_TTL_SECONDS` | `30` | 不存在的 id 的负缓存有效期（防穿透） |
+| `PRODUCT_CACHE_LOCK_TIMEOUT_SECONDS` | `2.0` | 等锁上限，超时退化为直接回源（防击穿时卡死） |
 
 缓存策略要点：
 
@@ -81,6 +83,11 @@ REDIS_URL=redis://127.0.0.1:6379/0
 - **列表**的 key 带版本号（`list:v{n}:skip:limit`），任何写操作只 `INCR` 版本号让旧 key 立刻不可达，
   避免为「有多少个分页 key」做全库 `SCAN`；版本号本身不设 TTL，否则归零会让旧 key「复活」。
 - **深分页不缓存**：`skip` 无上限，全缓存会把 key 空间撑成无限。
+- **防穿透**：404 会写一个短 TTL 的 `missing:{id}` 标记，后续同样的 id 不再打数据库；
+  写操作（含新增）会顺带清掉该标记，避免 `TRUNCATE` / 备份恢复导致 id 回退时误判。
+- **防击穿**：`SingleFlight` 让同一 key 的并发回源串行化，热点 key 过期时只有一个请求查库，
+  其余排队后直接读缓存；等锁超过 `PRODUCT_CACHE_LOCK_TIMEOUT_SECONDS` 则退化为直接回源，
+  避免队首卡住时整条队列挂死。该锁是**进程内**的，多实例时每个实例各回源一次。
 - **Redis 故障时缓存整体降级**：读不到就当未命中，写/失效失败只记日志，不影响接口返回。
 
 ### 5. 启动开发服务

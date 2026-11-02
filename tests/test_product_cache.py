@@ -9,19 +9,22 @@
 这比 mock 计数器更可靠：它同时验证了「缓存真的被读到了」和「失效逻辑真的没生效」。
 """
 
+import asyncio
 from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
 from httpx import AsyncClient
 from redis.asyncio import Redis
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import event
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from app.core.config import settings
 from app.core.redis import get_redis
 from app.models.product import Product
 from app.schemas.product import ProductPage, ProductResponse
-from app.services.product_cache import ProductCache
+from app.services.product_cache import ProductCache, product_cache
+from app.services.product_service import ProductService
 
 PRODUCTS_URL = "/api/v1/products"
 
@@ -94,11 +97,38 @@ class TestDetailCache:
         assert response.status_code == 404
         assert response.json()["code"] == "PRODUCT_NOT_FOUND"
 
-    async def test_missing_product_is_not_negatively_cached(self, client: AsyncClient) -> None:
+    async def test_missing_product_is_negatively_cached(self, client: AsyncClient) -> None:
+        """穿透防护：第一次 404 后要留下标记，后续同样的 id 不再打数据库。"""
         response = await client.get(f"{PRODUCTS_URL}/999999")
 
         assert response.status_code == 404
-        assert await get_redis().exists(f"{settings.CACHE_KEY_PREFIX}:detail:999999") == 0
+        assert await get_redis().exists(f"{settings.CACHE_KEY_PREFIX}:missing:999999") == 1
+
+    async def test_negative_cache_prevents_database_lookup(self, client: AsyncClient, db_session: AsyncSession) -> None:
+        assert (await client.get(f"{PRODUCTS_URL}/888888")).status_code == 404
+
+        # 直接把这个 id 插进库：如果读的还是库，这里会变成 200
+        db_session.add(Product(id=888888, name="后来才有的商品", price=Decimal("1.00"), stock=1))
+        await db_session.flush()
+
+        assert (await client.get(f"{PRODUCTS_URL}/888888")).status_code == 404
+
+    async def test_negative_entry_has_short_ttl(self, client: AsyncClient) -> None:
+        await client.get(f"{PRODUCTS_URL}/777777")
+
+        ttl = await get_redis().ttl(f"{settings.CACHE_KEY_PREFIX}:missing:777777")
+
+        assert 0 < ttl <= settings.PRODUCT_CACHE_NEGATIVE_TTL_SECONDS
+
+    async def test_write_clears_negative_marker(self, client: AsyncClient) -> None:
+        """id 被复用时（TRUNCATE / 备份恢复），残留的负缓存标记必须能被写操作清掉。"""
+        await client.get(f"{PRODUCTS_URL}/666666")
+        key = f"{settings.CACHE_KEY_PREFIX}:missing:666666"
+        assert await get_redis().exists(key) == 1
+
+        await product_cache.invalidate(666666)
+
+        assert await get_redis().exists(key) == 0
 
 
 class TestListCache:
@@ -156,11 +186,84 @@ class TestListCache:
         assert await get_redis().ttl(f"{settings.CACHE_KEY_PREFIX}:list:version") == -1
 
 
+class TestStampedeProtection:
+    """击穿：热点 key 刚过期时，并发请求只能有一个真的查库。
+
+    断言方式是真的去数 SQL 语句（挂在 engine 上），而不是 mock 计数器——
+    这样「到底有几个请求打到了数据库」是实测出来的。
+    """
+
+    async def test_concurrent_detail_misses_query_database_once(
+        self, client: AsyncClient, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        created = await create_product(client)
+        url = f"{PRODUCTS_URL}/{created['id']}"
+
+        # 放慢回源：否则本地 MySQL 太快，并发窗口根本不存在，用例会「假通过」
+        original = ProductService.get_product
+
+        async def slow_get_product(self: ProductService, product_id: int) -> Product:
+            await asyncio.sleep(0.05)
+            return await original(self, product_id)
+
+        monkeypatch.setattr(ProductService, "get_product", slow_get_product)
+
+        statements: list[str] = []
+
+        def record(conn, cursor, statement, parameters, context, executemany) -> None:
+            if "FROM products" in statement:
+                statements.append(statement)
+
+        event.listen(engine.sync_engine, "before_cursor_execute", record)
+        try:
+            responses = await asyncio.gather(*(client.get(url) for _ in range(10)))
+        finally:
+            event.remove(engine.sync_engine, "before_cursor_execute", record)
+
+        assert [response.status_code for response in responses] == [200] * 10
+        assert len(statements) == 1
+
+    async def test_concurrent_list_misses_query_database_once(
+        self, client: AsyncClient, engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        await create_product(client)
+
+        original = ProductService.list_products
+
+        async def slow_list_products(self: ProductService, skip: int = 0, limit: int = 100):
+            await asyncio.sleep(0.05)
+            return await original(self, skip=skip, limit=limit)
+
+        monkeypatch.setattr(ProductService, "list_products", slow_list_products)
+
+        statements: list[str] = []
+
+        def record(conn, cursor, statement, parameters, context, executemany) -> None:
+            if "FROM products" in statement:
+                statements.append(statement)
+
+        event.listen(engine.sync_engine, "before_cursor_execute", record)
+        try:
+            responses = await asyncio.gather(*(client.get(PRODUCTS_URL) for _ in range(10)))
+        finally:
+            event.remove(engine.sync_engine, "before_cursor_execute", record)
+
+        assert [response.status_code for response in responses] == [200] * 10
+        # 一次取当前页 + 一次 count
+        assert len(statements) == 2
+
+
 class TestCacheDegradation:
     async def test_redis_failure_degrades_to_database(self) -> None:
         """缓存是旁路：Redis 挂了就只能退化成每次查库，不能把接口变成 500。"""
         client = Redis.from_url("redis://127.0.0.1:6390/0", socket_connect_timeout=0.2, socket_timeout=0.2)
-        cache = ProductCache(client, prefix="degraded:test", ttl_seconds=10, max_cached_offset=100)
+        cache = ProductCache(
+            client,
+            prefix="degraded:test",
+            ttl_seconds=10,
+            negative_ttl_seconds=5,
+            max_cached_offset=100,
+        )
         product = ProductResponse(
             id=1,
             name="离线商品",
@@ -170,10 +273,12 @@ class TestCacheDegradation:
         )
 
         try:
-            assert await cache.get_product(1) is None
+            # Redis 不可用时一律当作「未命中」：不能把 404 误判成命中，
+            # 也不能让写/失效在接口成功路径上抛出来
+            assert (await cache.get_product(1)).hit is False
             assert await cache.get_page(0, 0, 10) is None
-            # 写与失效都不允许抛：它们在接口的成功路径上
             await cache.set_product(product)
+            await cache.set_missing(1)
             await cache.set_page(0, 0, 10, ProductPage(total=1, items=[product]))
             await cache.invalidate(1)
             await cache.invalidate()

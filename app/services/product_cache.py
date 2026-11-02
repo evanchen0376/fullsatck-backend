@@ -13,6 +13,16 @@
   「这个商品的列表缓存到底有多少个分页 key」是未知数，逐个删就得 ``SCAN`` 全库；
   版本号让旧 key 立刻不可达，再靠 TTL 自然消失，代价恒定 O(1)。
 
+三类缓存问题在这里的处理
+------------------------
+- **穿透**：不存在的商品也写一个短 TTL 的负缓存标记（``:missing:{id}``），
+  否则扫一遍 id 就能把每个请求都打到数据库。因为 ``products.id`` 是自增主键、
+  正常不会被复用，负缓存不会把「后来才创建的商品」误判成不存在；
+  唯一的例外是 ``TRUNCATE`` / 从备份恢复导致 id 回退，所以创建时也会顺手删掉
+  可能存在的旧标记（见 ``invalidate``）。
+- **击穿**：不在这一层做，由路由层的 ``SingleFlight`` 把并发回源压成一次。
+- **雪崩**：TTL 带 ±10% 抖动，避免同一批 key 同时过期。
+
 一致性边界
 ----------
 cache-aside 的固有窗口：读请求在「miss → 查库」之间如果插入了写操作，
@@ -22,6 +32,7 @@ cache-aside 的固有窗口：读请求在「miss → 查库」之间如果插�
 
 import logging
 import random
+from dataclasses import dataclass
 from typing import Any
 
 from pydantic import ValidationError
@@ -35,6 +46,18 @@ from app.schemas.product import ProductPage, ProductResponse
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class Cached[T]:
+    """缓存查询结果。
+
+    ``hit`` 区分「Redis 里没有」和「Redis 里有但值就是空」——后者是负缓存，
+    对应 HTTP 404，必须和「未命中、需要查库」区分开，否则负缓存就没意义了。
+    """
+
+    hit: bool
+    value: T | None = None
+
+
 class ProductCache:
     def __init__(
         self,
@@ -42,26 +65,37 @@ class ProductCache:
         *,
         prefix: str,
         ttl_seconds: int,
+        negative_ttl_seconds: int,
         max_cached_offset: int,
     ) -> None:
         self._client = client
         self._prefix = prefix.rstrip(":")
         self._ttl_seconds = ttl_seconds
+        self._negative_ttl_seconds = negative_ttl_seconds
         self._max_cached_offset = max_cached_offset
 
     # ---------- 详情 ----------
 
-    async def get_product(self, product_id: int) -> ProductResponse | None:
-        raw = await self._safe("读取详情", self._client.get(self._detail_key(product_id)))
-        if raw is None:
-            return None
+    async def get_product(self, product_id: int) -> Cached[ProductResponse]:
+        """一次 MGET 同时取「有值」和「不存在」两种标记，避免 miss 时多一次往返。"""
+        raw, missing = await self._safe(
+            "读取详情",
+            self._client.mget([self._detail_key(product_id), self._missing_key(product_id)]),
+            [None, None],
+        )
 
-        try:
-            return ProductResponse.model_validate_json(raw)
-        except ValidationError:
-            # 结构变更导致旧格式对不上：删掉让它重新从库里取，别让脏数据一直报错
-            await self._safe("删除脏详情", self._client.delete(self._detail_key(product_id)))
-            return None
+        if raw is not None:
+            try:
+                return Cached(True, ProductResponse.model_validate_json(raw))
+            except ValidationError:
+                # 结构变更导致旧格式对不上：删掉让它重新从库里取，别让脏数据一直报错
+                await self._safe("删除脏详情", self._client.delete(self._detail_key(product_id)))
+                return Cached(False)
+
+        if missing is not None:
+            return Cached(True, None)
+
+        return Cached(False)
 
     async def set_product(self, product: ProductResponse) -> None:
         await self._safe(
@@ -71,6 +105,13 @@ class ProductCache:
                 product.model_dump_json(),
                 ex=self._ttl(),
             ),
+        )
+
+    async def set_missing(self, product_id: int) -> None:
+        """记下「这个 id 确实不存在」，短 TTL 兜住 id 回退等极端情况。"""
+        await self._safe(
+            "写入空值标记",
+            self._client.set(self._missing_key(product_id), "1", ex=self._negative_ttl_seconds),
         )
 
     # ---------- 列表 ----------
@@ -124,10 +165,15 @@ class ProductCache:
     async def invalidate(self, product_id: int | None = None) -> None:
         """写操作提交后调用。
 
-        ``product_id`` 为 ``None`` 表示新增：详情还不存在，只需让列表失效。
+        ``product_id`` 为 ``None`` 表示不涉及具体商品（只需让列表失效）。
+        传入 id 时会同时删详情与负缓存标记：正常自增 id 不会被复用，
+        但如果表被 ``TRUNCATE`` 或从旧备份恢复，id 可能回退到曾经被标记为「不存在」的值。
         """
         if product_id is not None:
-            await self._safe("删除详情", self._client.delete(self._detail_key(product_id)))
+            await self._safe(
+                "删除详情",
+                self._client.delete(self._detail_key(product_id), self._missing_key(product_id)),
+            )
 
         # 版本号不设 TTL：它一旦过期归零，之前那些还没到期的旧列表 key 会「复活」
         await self._safe("递增列表版本", self._client.incr(self._version_key()))
@@ -144,6 +190,9 @@ class ProductCache:
 
     def _detail_key(self, product_id: int) -> str:
         return f"{self._prefix}:detail:{product_id}"
+
+    def _missing_key(self, product_id: int) -> str:
+        return f"{self._prefix}:missing:{product_id}"
 
     def _version_key(self) -> str:
         return f"{self._prefix}:list:version"
@@ -174,5 +223,6 @@ product_cache = ProductCache(
     get_redis(),
     prefix=settings.CACHE_KEY_PREFIX,
     ttl_seconds=settings.PRODUCT_CACHE_TTL_SECONDS,
+    negative_ttl_seconds=settings.PRODUCT_CACHE_NEGATIVE_TTL_SECONDS,
     max_cached_offset=settings.PRODUCT_LIST_CACHE_MAX_OFFSET,
 )
